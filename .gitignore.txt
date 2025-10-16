@@ -1,0 +1,8 @@
+.env
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+plan.json
+tfplan
+backend2.tf
