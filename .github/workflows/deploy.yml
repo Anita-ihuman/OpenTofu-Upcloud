@@ -1,0 +1,84 @@
+name: OpenTofu CI Pipeline
+
+on:
+  workflow_dispatch:
+
+jobs:
+  opentofu:
+    runs-on: ubuntu-latest
+
+    env:
+      OPENTOFU_VERSION: 1.7.0
+      CONFTEST_VERSION: 0.55.0
+      AWS_REGION: de-fra1
+
+    steps:
+      # Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Set up OpenTofu
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: ${{ env.OPENTOFU_VERSION }}
+
+      # Set up Conftest
+      - name: Setup Conftest
+        run: |
+          curl -L -o conftest.tar.gz https://github.com/open-policy-agent/conftest/releases/download/v${{ env.CONFTEST_VERSION }}/conftest_${{ env.CONFTEST_VERSION }}_Linux_x86_64.tar.gz
+          tar -xzf conftest.tar.gz
+          chmod +x conftest
+          mv conftest /usr/local/bin/
+
+      # Debug environment variables
+      - name: Debug Environment
+        run: |
+          env | grep -E 'UPCLOUD|AWS' | sort
+
+      # Initialize OpenTofu
+      - name: OpenTofu Init
+        run: tofu init -upgrade -reconfigure
+        env:
+          UPCLOUD_USERNAME: ${{ secrets.UPCLOUD_USERNAME }}
+          UPCLOUD_PASSWORD: ${{ secrets.UPCLOUD_PASSWORD }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      # Validate OpenTofu configuration
+      - name: OpenTofu Validate
+        run: tofu validate
+        env:
+          UPCLOUD_USERNAME: ${{ secrets.UPCLOUD_USERNAME }}
+          UPCLOUD_PASSWORD: ${{ secrets.UPCLOUD_PASSWORD }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      # Generate OpenTofu plan
+      - name: OpenTofu Plan
+        run: |
+          tofu plan -out=tfplan
+          tofu show -json tfplan > plan.json
+        env:
+          UPCLOUD_USERNAME: ${{ secrets.UPCLOUD_USERNAME }}
+          UPCLOUD_PASSWORD: ${{ secrets.UPCLOUD_PASSWORD }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      # Run Conftest policy checks
+      - name: Run Conftest Policy Checks
+        run: conftest test plan.json -p policy/
+        env:
+          UPCLOUD_USERNAME: ${{ secrets.UPCLOUD_USERNAME }}
+          UPCLOUD_PASSWORD: ${{ secrets.UPCLOUD_PASSWORD }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      # Apply OpenTofu changes
+      - name: OpenTofu Apply
+        run: tofu apply -auto-approve tfplan
+        env:
+          UPCLOUD_USERNAME: ${{ secrets.UPCLOUD_USERNAME }}
+          UPCLOUD_PASSWORD: ${{ secrets.UPCLOUD_PASSWORD }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
