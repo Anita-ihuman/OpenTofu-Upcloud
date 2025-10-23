@@ -11,7 +11,7 @@ allowed_plans := {
   "4xCPU-8GB",
 }
 
-deny contains msg if {
+deny[msg] if {
   some i
   r := input.resource_changes[i]
   r.type == "upcloud_server"

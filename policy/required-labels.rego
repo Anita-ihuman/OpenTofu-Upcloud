@@ -4,20 +4,11 @@ import future.keywords.if
 import future.keywords.contains
 
 # Use a list (or bind from the set with [_])
-required_labels := ["environment", "managed_by"]
+required_tags := {"Environment", "Owner"}
 
-deny contains msg if {
-  some i
-  r := input.resource_changes[i]
-  r.type == "upcloud_server"
-  r.change.actions[_] == "create"
-
-  labels := r.change.after.labels
-
-  req := required_labels[_]
-
-  not labels[req]
-
+deny[msg] if {
+  input.resource_type in {"aws_instance", "aws_s3_bucket"}
+  some tag in required_tags
+  not tag in input.tags
   msg := sprintf("Server is missing required label: %s", [req])
 }
-

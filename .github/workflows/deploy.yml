@@ -1,10 +1,22 @@
-name: OpenTofu CI Pipeline
+name: OpenTofu CI/CD Pipeline
 
+# This workflow runs manually for CD (apply) and on pull requests for CI (plan)
 on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   opentofu:
+    # This job handles init, plan, validate, and policy checks (CI phase)
     runs-on: ubuntu-latest
 
     env:
@@ -12,6 +24,11 @@ jobs:
       CONFTEST_VERSION: 0.55.0
       AWS_REGION: de-fra1
       TF_LOG: DEBUG
+      # Secrets are promoted to the job environment for all steps to use
+      UPCLOUD_USERNAME: ${{ secrets.UPCLOUD_USERNAME }}
+      UPCLOUD_PASSWORD: ${{ secrets.UPCLOUD_PASSWORD }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
     steps:
       # Checkout the repository
@@ -32,84 +49,73 @@ jobs:
           chmod +x conftest
           mv conftest /usr/local/bin/
 
-      # Debug environment variables
-      - name: Debug Environment
-        run: |
-          env | grep -E 'UPCLOUD|AWS' | sort
-          echo "Checking UpCloud API connectivity..."
-          curl -u "${UPCLOUD_USERNAME}:${UPCLOUD_PASSWORD}" -s -o /dev/null -w "%{http_code}" https://api.upcloud.com/1.3/server || echo "UpCloud API request failed"
-        env:
-          UPCLOUD_USERNAME: ${{ secrets.UPCLOUD_USERNAME }}
-          UPCLOUD_PASSWORD: ${{ secrets.UPCLOUD_PASSWORD }}
-
-      # Initialize OpenTofu
+      # Initialize OpenTofu (inherits secrets from job env)
       - name: OpenTofu Init
         run: tofu init -upgrade -reconfigure
-        env:
-          UPCLOUD_USERNAME: ${{ secrets.UPCLOUD_USERNAME }}
-          UPCLOUD_PASSWORD: ${{ secrets.UPCLOUD_PASSWORD }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
       # Validate OpenTofu configuration
       - name: OpenTofu Validate
         run: tofu validate
-        env:
-          UPCLOUD_USERNAME: ${{ secrets.UPCLOUD_USERNAME }}
-          UPCLOUD_PASSWORD: ${{ secrets.UPCLOUD_PASSWORD }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
       # Generate OpenTofu plan
       - name: OpenTofu Plan
+        # detailed-exitcode exits 0=no changes, 1=error, 2=changes needed
         run: |
-          timeout 5m tofu plan -out=tfplan -detailed-exitcode -no-color
+          echo "Running OpenTofu Plan..."
+          tofu plan -out=tfplan -detailed-exitcode -no-color || true # Allow failure to exit 2
           tofu show -json tfplan > plan.json
-        env:
-          UPCLOUD_USERNAME: ${{ secrets.UPCLOUD_USERNAME }}
-          UPCLOUD_PASSWORD: ${{ secrets.UPCLOUD_PASSWORD }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
       # Run Conftest policy checks
       - name: Run Conftest Policy Checks
         run: conftest test plan.json -p policy/
-        env:
-          UPCLOUD_USERNAME: ${{ secrets.UPCLOUD_USERNAME }}
-          UPCLOUD_PASSWORD: ${{ secrets.UPCLOUD_PASSWORD }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      # Upload the plan file so the 'apply' job can use it
+      - name: Upload OpenTofu Plan Artifact
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: opentofu-plan
+          path: |
+            tfplan
+            plan.json
+          retention-days: 1
 
   apply:
+    # This job handles the deployment (CD phase) and only runs on push to main or workflow_dispatch
     needs: opentofu
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+
     env:
       OPENTOFU_VERSION: 1.7.0
       AWS_REGION: de-fra1
       TF_LOG: DEBUG
+      # Secrets are promoted to the job environment
+      UPCLOUD_USERNAME: ${{ secrets.UPCLOUD_USERNAME }}
+      UPCLOUD_PASSWORD: ${{ secrets.UPCLOUD_PASSWORD }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # Download the plan artifact created by the 'opentofu' job
+      - name: Download OpenTofu Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: opentofu-plan
 
       - name: Setup OpenTofu
         uses: opentofu/setup-opentofu@v1
         with:
           tofu_version: ${{ env.OPENTOFU_VERSION }}
 
+      # Initialize OpenTofu with current state
       - name: Init
         run: tofu init -input=false
-        env:
-          UPCLOUD_USERNAME: ${{ secrets.UPCLOUD_USERNAME }}
-          UPCLOUD_PASSWORD: ${{ secrets.UPCLOUD_PASSWORD }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AES_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
       - name: Apply
-        env:
-          TOFU_CONFIRM: "true"
-          UPCLOUD_USERNAME: ${{ secrets.UPCLOUD_USERNAME }}
-          UPCLOUD_PASSWORD: ${{ secrets.UPCLOUD_PASSWORD }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: tofu apply -input=false -auto-approve tfplan
+        env:
+          TOFU_CONFIRM: "true" # Required for automated apply

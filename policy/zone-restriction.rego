@@ -11,7 +11,7 @@ allowed_zones := {
   "de-fra1",
 }
 
-deny contains msg if {
+deny[msg] if {
   some i
   r := input.resource_changes[i]
   r.type == "upcloud_server"
@@ -22,3 +22,4 @@ deny contains msg if {
 
   msg := sprintf("Server is in unauthorized zone: %s", [zone])
 }
+
