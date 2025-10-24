@@ -3,6 +3,10 @@ name: OpenTofu Destroy Pipeline
 on:
     workflow_dispatch:
 
+concurrency:
+    group: opentofu-destroy-${{ github.ref }}
+    cancel-in-progress: false
+
 jobs:
     destroy:
         runs-on: ubuntu-latest
@@ -10,30 +14,16 @@ jobs:
         env:
             OPENTOFU_VERSION: 1.7.0
             AWS_REGION: de-fra1
-            TF_LOG: DEBUG
 
         steps:
-            # Checkout the repository
             - name: Checkout code
               uses: actions/checkout@v4
 
-            # Set up OpenTofu
             - name: Setup OpenTofu
               uses: opentofu/setup-opentofu@v1
               with:
                   tofu_version: ${{ env.OPENTOFU_VERSION }}
 
-            # Debug environment variables
-            - name: Debug Environment
-              run: |
-                  env | grep -E 'UPCLOUD|AWS' | sort
-                  echo "Checking UpCloud API connectivity..."
-                  curl -u "${UPCLOUD_USERNAME}:${UPCLOUD_PASSWORD}" -s -o /dev/null -w "%{http_code}" https://api.upcloud.com/1.3/server || echo "UpCloud API request failed"
-              env:
-                  UPCLOUD_USERNAME: ${{ secrets.UPCLOUD_USERNAME }}
-                  UPCLOUD_PASSWORD: ${{ secrets.UPCLOUD_PASSWORD }}
-
-            # Initialize OpenTofu
             - name: OpenTofu Init
               run: tofu init -upgrade -reconfigure
               env:
@@ -42,7 +32,14 @@ jobs:
                   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
                   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
-            # Destroy resources
+            - name: OpenTofu Plan Destroy
+              run: tofu plan -destroy -no-color
+              env:
+                  UPCLOUD_USERNAME: ${{ secrets.UPCLOUD_USERNAME }}
+                  UPCLOUD_PASSWORD: ${{ secrets.UPCLOUD_PASSWORD }}
+                  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+                  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
             - name: OpenTofu Destroy
               run: tofu destroy -auto-approve
               env:
